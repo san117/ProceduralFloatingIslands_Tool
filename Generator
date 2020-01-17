@@ -1,0 +1,218 @@
+using System.Collections;
+using System.Collections.Generic;
+using UnityEngine;
+using UnityEditor;
+
+public class Generator : EditorWindow
+{
+    [MenuItem("Experimental/Generator")]
+    public static void OnInit()
+    {
+        Generator window = EditorWindow.GetWindow<Generator>();
+        window.Show();
+    }
+
+    private Texture2D map;
+    Vector2 rectPos;
+
+    private enum PixelCountAlgorithm
+    {
+        EIGHT_CONNNECTED, FOUR_CONNECTED
+    }
+
+    //Constants
+    public const float DOTS_AMOUNT_FACTOR = 4f; //Only POW values!
+    public const float DOTS_RADIUS_MARGIN = 3; 
+
+    //Map settings
+    private int resolution = 512;
+    private float landArea = 4;
+    private float landType = 0.5f;
+    private int octaves = 1;
+    private AnimationCurve landFalloff = AnimationCurve.Linear(0, 1, 1, 0);
+    private Gradient landHeightColor = new Gradient();
+    private PixelCountAlgorithm algorithm = PixelCountAlgorithm.EIGHT_CONNNECTED;
+
+    private void OnGUI()
+    {
+        if (map == null)
+            map = CreateBlackTexture(resolution);
+
+        EditorGUILayout.BeginHorizontal(GUILayout.Width(position.width), GUILayout.ExpandWidth(true));
+
+        rectPos = EditorGUILayout.BeginScrollView(rectPos);
+        GUILayout.Label(map);
+        EditorGUILayout.EndScrollView();
+
+        EditorGUILayout.BeginHorizontal("box", GUILayout.ExpandHeight(true), GUILayout.Width(position.width/2));
+
+        EditorGUILayout.BeginVertical();
+
+        resolution = EditorGUILayout.IntSlider("Resolution", resolution, 64, 2048);
+        resolution = Mathf.ClosestPowerOfTwo(resolution);
+        octaves = EditorGUILayout.IntSlider("Octaves", octaves, 1, 8);
+
+        DrawLabeledSlider("Land Area", "Few", "Many", ref landArea, 0.12f, 1f);
+        DrawLabeledSlider("Land Type", "Archipielago", "Continent", ref landType, 0.5f, 1f);
+
+        landFalloff = EditorGUILayout.CurveField("Land Falloff", landFalloff);
+
+        // landThreshold = EditorGUILayout.CurveField("Land Threshold", landThreshold);
+
+        landHeightColor = EditorGUILayout.GradientField("Land Heightcolor", landHeightColor);
+
+        algorithm = (PixelCountAlgorithm)EditorGUILayout.EnumPopup("Count Pixel Algorithm", algorithm);
+
+        if (GUILayout.Button("Generate"))
+        {
+            GenerateMap();
+        }
+
+        EditorGUILayout.EndVertical();
+        EditorGUILayout.EndHorizontal();
+        EditorGUILayout.EndHorizontal();
+    }
+
+    private void DrawLabeledSlider(string mainLabel, string leftLabel, string rightLabel, ref float value, float minValue, float maxValue)
+    {
+        Rect position = EditorGUILayout.GetControlRect(false, 2 * EditorGUIUtility.singleLineHeight); // Get two lines for the control
+        position.height *= 0.5f;
+        value = EditorGUI.Slider(position, mainLabel, value, minValue, maxValue);
+        // Set the rect for the sub-labels
+        position.y += position.height;
+        position.x += EditorGUIUtility.labelWidth;
+        position.width -= EditorGUIUtility.labelWidth + 54; //54 seems to be the width of the slider's float field
+                                                            //sub-labels
+        GUIStyle style = GUI.skin.label;
+        style.alignment = TextAnchor.UpperLeft; EditorGUI.LabelField(position, leftLabel, style);
+        style.alignment = TextAnchor.UpperRight; EditorGUI.LabelField(position, rightLabel, style);
+    }
+
+    private Texture2D CreateBlackTexture(int resolution)
+    {
+        var aux = new Texture2D(resolution, resolution);
+
+        for (int x = 0; x < resolution; x++)
+        {
+            for (int y = 0; y < resolution; y++)
+            {
+                aux.SetPixel(x,y, Color.black);
+            }
+        }
+
+        aux.Apply();
+
+        return aux;
+    }
+
+    private void GenerateMap()
+    {
+        //Generate Noise ===================================
+        #region
+
+        map = CreateBlackTexture(resolution);
+
+        for (int o = 0; o < octaves; o++)
+        {
+            for (int i = 0; i < GetDots_Formula(landArea); i++)
+            {
+                var halfResolution = resolution / 2;
+                var margin = (resolution / DOTS_RADIUS_MARGIN);
+
+                var posInsideCircle = (Random.insideUnitCircle * margin) + Vector2.one * halfResolution;
+
+                //map.SetPixel((int)posInsideCircle.x, (int)posInsideCircle.y, Color.white);
+
+                var radius = (int)(halfResolution * 0.35f * landType);
+
+                for (int x = -radius; x < radius; x++)
+                {
+                    for (int y = -radius; y < radius; y++)
+                    {
+                        var radialPos = posInsideCircle + new Vector2(x, y);
+
+                        float distanceToCenter = Vector2.Distance(radialPos, posInsideCircle);
+
+                        var normalizedDistance = Mathf.InverseLerp(0, radius, distanceToCenter);
+
+                        if (Random.Range(0f, 1f) < landFalloff.Evaluate(normalizedDistance))
+                        {
+                            //Color color = Color.Lerp(Color.black, Color.white, heightFalloff.Evaluate(normalizedDistance));
+
+                            map.SetPixel((int)radialPos.x, (int)radialPos.y, Color.white);
+                        }
+                    }
+                }
+            }
+        }
+        #endregion
+
+        //Generate Shape
+        #region
+
+        int pixelCount = 0;
+        var auxMap = new Texture2D(resolution,resolution);
+        Graphics.CopyTexture(map, auxMap);
+
+        for (int x = 0; x < resolution; x++)
+        {
+            for (int y = 0; y < resolution; y++)
+            {
+                pixelCount++;
+
+                float alphaAmount = 0;
+                float result = 0;
+
+                if (algorithm == PixelCountAlgorithm.EIGHT_CONNNECTED)
+                {
+                    for (int dx = -1; dx <= 1; dx++)
+                    {
+                        for (int dy = -1; dy <= 1; dy++)
+                        {
+                            if (x+dx > 0 && x+dx < resolution-1 && y+dy > 0 && y+dy < resolution-1)
+                            {
+                                alphaAmount += map.GetPixel(x+dx,y+dy).grayscale;
+                            }
+                        }
+                    }
+
+                    result = alphaAmount / 9;
+                }
+
+                if (algorithm == PixelCountAlgorithm.FOUR_CONNECTED)
+                {
+                    if (x < resolution-1)
+                        alphaAmount += map.GetPixel(x + 1, y).grayscale;
+
+                    if (x > 0)
+                        alphaAmount += map.GetPixel(x - 1, y).grayscale;
+
+                    if (y < resolution - 1)
+                        alphaAmount += map.GetPixel(x, y + 1).grayscale;
+
+                    if (y > 0)
+                        alphaAmount += map.GetPixel(x, y - 1).grayscale;
+
+                    result = alphaAmount / 4;
+                }
+
+                //auxMap.SetPixel(x,y, Color.Lerp(Color.black, Color.white, landThreshold.Evaluate(result)));
+                auxMap.SetPixel(x,y, landHeightColor.Evaluate(result));
+
+                EditorUtility.DisplayProgressBar("Creating Land", "Rasterizing", pixelCount / Mathf.Pow(resolution, 2));
+            }
+        }
+
+        Graphics.CopyTexture(auxMap, map);
+        EditorUtility.ClearProgressBar();
+        #endregion
+        map.Apply();
+
+        TextureScale.Point(map, 512, 512);
+    }
+
+    private int GetDots_Formula(float clamp01Value)
+    {
+        return (int)((resolution / DOTS_AMOUNT_FACTOR) * clamp01Value);
+    }
+}
